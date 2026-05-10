@@ -1,0 +1,459 @@
+import 'dart:math';
+import 'package:flutter/material.dart';
+import '../models/food_model.dart';
+import '../models/user_model.dart';
+import '../core/config/app_config.dart';
+import '../core/services/openai_food_service.dart';
+import '../core/services/food_search_service.dart';
+import '../core/storage/app_local_storage.dart';
+
+class NutritionProvider extends ChangeNotifier {
+  final List<FoodModel> _dailyLog = [];
+  final List<FoodModel> _history = [];
+  bool _isLoading = false;
+  DateTime? _lastLogDate;
+  int _streakDays = 0;
+  int _points = 0;
+  String? _activeEmail;
+  String? _openAiKey;
+
+  late OpenAIFoodService _openAIFoodService;
+  late final Future<void> _openAIKeyLoad;
+  final AppLocalStorage _storage = AppLocalStorage();
+  late FoodSearchService _foodSearchService;
+
+  NutritionProvider() {
+    _openAIFoodService = OpenAIFoodService(
+      apiKey: '',
+    ); // Initialize with empty key first
+    _foodSearchService = FoodSearchService();
+    _openAIKeyLoad = _loadStoredOpenAIKey();
+  }
+
+  Future<void> _ensureOpenAIKeyReady() async {
+    await _openAIKeyLoad;
+  }
+
+  List<FoodModel> get dailyLog => _dailyLog;
+  List<FoodModel> get history => _history;
+  bool get isLoading => _isLoading;
+  int get streakDays => _streakDays;
+  int get points => _points;
+  String? get activeEmail => _activeEmail;
+  bool get isOpenAIConfigured => _openAIFoodService.isConfigured;
+
+  double get totalCaloriesConsumed =>
+      _dailyLog.fold(0, (sum, item) => sum + item.calories);
+  double get totalProteinConsumed =>
+      _dailyLog.fold(0, (sum, item) => sum + item.protein);
+  double get totalFatConsumed =>
+      _dailyLog.fold(0, (sum, item) => sum + item.fat);
+  double get totalCarbsConsumed =>
+      _dailyLog.fold(0, (sum, item) => sum + item.carbs);
+  double get totalSugarConsumed =>
+      _dailyLog.fold(0, (sum, item) => sum + item.sugar);
+
+  Future<void> syncForUser(String? email) async {
+    if (email == _activeEmail) return;
+
+    _activeEmail = email;
+    _dailyLog.clear();
+    _history.clear();
+    _streakDays = 0;
+    _points = 0;
+    _lastLogDate = null;
+
+    if (email == null) {
+      notifyListeners();
+      return;
+    }
+
+    _isLoading = true;
+    notifyListeners();
+
+    final data = await _storage.readNutritionByEmail(email);
+    final historyRaw = (data['history'] as List?) ?? const [];
+    for (final item in historyRaw) {
+      if (item is Map<String, dynamic>) {
+        _history.add(FoodModel.fromMap(item));
+      } else if (item is Map) {
+        _history.add(FoodModel.fromMap(Map<String, dynamic>.from(item)));
+      }
+    }
+    _rebuildDailyLog();
+
+    _points = (data['points'] as num?)?.toInt() ?? 0;
+    _streakDays = (data['streakDays'] as num?)?.toInt() ?? 0;
+    final lastDate = data['lastLogDate'];
+    if (lastDate is String && lastDate.isNotEmpty) {
+      _lastLogDate = DateTime.tryParse(lastDate);
+    }
+
+    _isLoading = false;
+    notifyListeners();
+  }
+
+  // Mock AI Scan
+  Future<FoodModel?> scanFood(String imagePath) async {
+    _isLoading = true;
+    notifyListeners();
+
+    await _ensureOpenAIKeyReady();
+
+    FoodModel scannedFood;
+    try {
+      final aiResult = await _openAIFoodService.analyzeNutrition(imagePath);
+      if (aiResult != null) {
+        scannedFood = FoodModel(
+          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          name: (aiResult['name'] as String?) ?? 'Makanan',
+          calories: (aiResult['calories'] as num?)?.toDouble() ?? 0.0,
+          protein: (aiResult['protein'] as num?)?.toDouble() ?? 0.0,
+          fat: (aiResult['fat'] as num?)?.toDouble() ?? 0.0,
+          carbs: (aiResult['carbs'] as num?)?.toDouble() ?? 0.0,
+          sugar: (aiResult['sugar'] as num?)?.toDouble() ?? 0.0,
+          consumedAt: DateTime.now(),
+          imageUrl: imagePath,
+          isScanned: true,
+        );
+      } else {
+        scannedFood = _mockScannedFood(imagePath);
+      }
+    } catch (_) {
+      // If API fails, keep app usable with fallback mock analysis.
+      scannedFood = _mockScannedFood(imagePath);
+    }
+
+    _isLoading = false;
+    notifyListeners();
+    return scannedFood;
+  }
+
+  void addFood(FoodModel food, {bool saveToHistory = true}) {
+    _dailyLog.add(food);
+    if (saveToHistory) {
+      _history.add(food);
+    }
+    _updateGamification(food.consumedAt);
+    _persistNutritionData();
+    notifyListeners();
+  }
+
+  void _updateGamification(DateTime loggedAt) {
+    final logDate = DateTime(loggedAt.year, loggedAt.month, loggedAt.day);
+    if (_lastLogDate == null) {
+      _streakDays = 1;
+      _points += 10;
+      _lastLogDate = logDate;
+      return;
+    }
+
+    final last = DateTime(
+      _lastLogDate!.year,
+      _lastLogDate!.month,
+      _lastLogDate!.day,
+    );
+    final diff = logDate.difference(last).inDays;
+    if (diff == 1) {
+      _streakDays += 1;
+      _points += 15;
+    } else if (diff == 0) {
+      _points += 5;
+    } else if (diff > 1) {
+      _streakDays = 1;
+      _points += 10;
+    }
+    _lastLogDate = logDate;
+  }
+
+  // AI Insights Generation
+  Future<String> getAIInsight(UserModel user) async {
+    try {
+      return await _openAIFoodService.generateInsight(user, _dailyLog);
+    } catch (_) {
+      return _generateFallbackInsight(user);
+    }
+  }
+
+  Future<List<FoodModel>> searchFoodRecommendations(
+    double calories,
+    double? sugar,
+    double? fat,
+    double? protein, {
+    List<FoodModel>? dailyLog,
+  }) async {
+    try {
+      print(
+        'DEBUG: Searching dataset for calories=$calories, protein=$protein, fat=$fat, sugar=$sugar',
+      );
+      final results = await _foodSearchService.searchFoodRecommendations(
+        calories,
+        sugar: sugar,
+        fat: fat,
+        protein: protein,
+      );
+      print('DEBUG: Dataset returned ${results.length} recommendations');
+      return results;
+    } catch (e) {
+      print('Error in searchFoodRecommendations: $e');
+      return [];
+    }
+  }
+
+  List<FoodModel> _getDefaultRecommendations(double targetCalories) {
+    final cal = targetCalories.clamp(100, 800).round();
+    return [
+      FoodModel(
+        id: 'default-1',
+        name: 'Ayam Panggang dengan Nasi Merah',
+        calories: (cal * 0.25).toDouble(),
+        protein: 20.0,
+        fat: 8.0,
+        carbs: 35.0,
+        sugar: 1.0,
+        consumedAt: DateTime.now(),
+      ),
+      FoodModel(
+        id: 'default-2',
+        name: 'Salad Sayuran dan Telur Rebus',
+        calories: (cal * 0.2).toDouble(),
+        protein: 12.0,
+        fat: 6.0,
+        carbs: 12.0,
+        sugar: 3.0,
+        consumedAt: DateTime.now(),
+      ),
+      FoodModel(
+        id: 'default-3',
+        name: 'Smoothie Buah Segar',
+        calories: (cal * 0.2).toDouble(),
+        protein: 8.0,
+        fat: 2.0,
+        carbs: 40.0,
+        sugar: 18.0,
+        consumedAt: DateTime.now(),
+      ),
+      FoodModel(
+        id: 'default-4',
+        name: 'Ikan Bakar dengan Sayuran',
+        calories: (cal * 0.22).toDouble(),
+        protein: 25.0,
+        fat: 7.0,
+        carbs: 8.0,
+        sugar: 2.0,
+        consumedAt: DateTime.now(),
+      ),
+      FoodModel(
+        id: 'default-5',
+        name: 'Oatmeal dengan Yoghurt',
+        calories: (cal * 0.13).toDouble(),
+        protein: 10.0,
+        fat: 3.0,
+        carbs: 42.0,
+        sugar: 8.0,
+        consumedAt: DateTime.now(),
+      ),
+    ];
+  }
+
+  Future<String> _generateFallbackInsight(UserModel user) async {
+    final calories = totalCaloriesConsumed.round();
+    final protein = totalProteinConsumed.round();
+    final carbs = totalCarbsConsumed.round();
+    final fat = totalFatConsumed.round();
+    final sugar = totalSugarConsumed.round();
+    final goal = user.dailyCalorieGoal.round();
+    final status = calories >= goal
+        ? 'kamu sudah mencapai atau melebihi target kalori harian'
+        : 'kamu masih berada di bawah target kalori harian';
+
+    return 'Berdasarkan catatan hari ini, total kalori kamu adalah $calories kcal dengan protein $protein g, karbohidrat $carbs g, lemak $fat g, dan gula $sugar g. $status. Untuk memperbaiki pola makan, pertimbangkan untuk menambahkan lebih banyak protein jika asupan protein rendah dan memilih karbohidrat kompleks untuk energi yang lebih stabil.';
+  }
+
+  Map<String, List<FoodModel>> get groupedHistoryByDate {
+    final map = <String, List<FoodModel>>{};
+    final sorted = [..._history]
+      ..sort((a, b) => b.consumedAt.compareTo(a.consumedAt));
+    for (final item in sorted) {
+      final d = item.consumedAt;
+      final key =
+          '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+      map.putIfAbsent(key, () => []);
+      map[key]!.add(item);
+    }
+    return map;
+  }
+
+  String get smartReminderMessage {
+    final now = DateTime.now();
+    if (_dailyLog.isEmpty && now.hour >= 12) {
+      return 'Belum ada makanan tercatat hari ini. Coba scan makan siang kamu.';
+    }
+    if (_dailyLog.length < 2 && now.hour >= 18) {
+      return 'Jangan lupa update konsumsi malam kamu agar tracking tetap konsisten.';
+    }
+    return 'Kerja bagus! Tetap konsisten mencatat gizi harian.';
+  }
+
+  Future<List<FoodModel>> getFoodRecommendations(double targetCalories) async {
+    if (targetCalories <= 0) {
+      return [];
+    }
+    return await searchFoodRecommendations(
+      targetCalories,
+      null,
+      null,
+      null,
+      dailyLog: _dailyLog,
+    );
+  }
+
+  Future<void> _setOpenAIKey(String? key, {bool saveToPrefs = false}) async {
+    _openAiKey = key;
+    _createNewServiceWithKey(_openAiKey);
+    if (saveToPrefs) {
+      await _storage.writeOpenAIKey(_openAiKey);
+    }
+  }
+
+  Future<bool> _reloadOpenAIKeyFromConfig() async {
+    final configKey = await AppConfig.getGoogleApiKey();
+    if (configKey != null && configKey.isNotEmpty && configKey != _openAiKey) {
+      await _setOpenAIKey(configKey, saveToPrefs: true);
+      print('DEBUG: Reloaded OpenAI key from config.json.');
+      return true;
+    }
+    return false;
+  }
+
+  Future<void> _loadStoredOpenAIKey() async {
+    print('DEBUG: Loading OpenAI key from shared storage...');
+
+    // First, try to load from SharedPreferences
+    final storedKey = await _storage.readOpenAIKey();
+    if (storedKey != null && storedKey.isNotEmpty) {
+      _openAiKey = storedKey;
+      _createNewServiceWithKey(_openAiKey);
+      print('DEBUG: OpenAI key loaded from shared storage.');
+      return;
+    }
+
+    // If not found in SharedPreferences, try to load from config.json
+    print(
+      'DEBUG: OpenAI key not found in shared storage, loading from config.json...',
+    );
+    final configKey = await AppConfig.getGoogleApiKey();
+    if (configKey != null && configKey.isNotEmpty) {
+      _openAiKey = configKey;
+      // Save it to SharedPreferences for future use
+      await _storage.writeOpenAIKey(_openAiKey);
+      _createNewServiceWithKey(_openAiKey);
+      print('DEBUG: OpenAI key loaded from config.json and saved.');
+      return;
+    }
+
+    print('DEBUG: No OpenAI key configured.');
+  }
+
+  Future<void> testAIConnection() async {
+    await _ensureOpenAIKeyReady();
+    print('=== AI CONNECTION TEST ===');
+    print('API Key loaded: ${_openAiKey != null && _openAiKey!.isNotEmpty}');
+    print('AI Service configured: ${_openAIFoodService.isConfigured}');
+
+    if (_openAIFoodService.isConfigured) {
+      try {
+        print('Testing AI call...');
+        final testResults = await _openAIFoodService.searchFoodRecommendations(
+          500,
+          10,
+          20,
+          30,
+        );
+        print('AI returned ${testResults.length} results:');
+        for (var food in testResults) {
+          print('- ${food.name}: ${food.calories.round()} kcal');
+        }
+      } catch (e) {
+        print('AI call failed: $e');
+        if (e.toString().contains('API key not valid')) {
+          print(
+            'DEBUG: Invalid API key detected. Trying fallback from config.json...',
+          );
+          final reloaded = await _reloadOpenAIKeyFromConfig();
+          if (reloaded) {
+            try {
+              final retryResults = await _openAIFoodService
+                  .searchFoodRecommendations(500, 10, 20, 30);
+              print(
+                'AI returned ${retryResults.length} results after config key fallback.',
+              );
+              return;
+            } catch (e2) {
+              print('AI call still failed after config key fallback: $e2');
+            }
+          }
+        }
+      }
+    } else {
+      print('AI Service not configured - using defaults');
+      final defaults = _getDefaultRecommendations(500);
+      print('Default recommendations: ${defaults.length}');
+      for (var food in defaults) {
+        print('- ${food.name}: ${food.calories.round()} kcal');
+      }
+    }
+    print('=== END TEST ===');
+  }
+
+  String? getStoredOpenAIKey() {
+    return _openAiKey;
+  }
+
+  void _createNewServiceWithKey(String? apiKey) {
+    _openAIFoodService = OpenAIFoodService(apiKey: apiKey ?? '');
+  }
+
+  FoodModel _mockScannedFood(String imagePath) {
+    final random = Random();
+    return FoodModel(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      name: 'Scanned Food ${random.nextInt(100)}',
+      calories: 150.0 + random.nextInt(300),
+      protein: 5.0 + random.nextInt(25),
+      fat: 2.0 + random.nextInt(20),
+      carbs: 10.0 + random.nextInt(40),
+      sugar: 1.0 + random.nextInt(15),
+      consumedAt: DateTime.now(),
+      imageUrl: imagePath,
+      isScanned: true,
+    );
+  }
+
+  void _rebuildDailyLog() {
+    _dailyLog.clear();
+    final now = DateTime.now();
+    for (final item in _history) {
+      final sameDay =
+          item.consumedAt.year == now.year &&
+          item.consumedAt.month == now.month &&
+          item.consumedAt.day == now.day;
+      if (sameDay) {
+        _dailyLog.add(item);
+      }
+    }
+  }
+
+  Future<void> _persistNutritionData() async {
+    final email = _activeEmail;
+    if (email == null) return;
+
+    final payload = <String, dynamic>{
+      'history': _history.map((e) => e.toMap()).toList(),
+      'points': _points,
+      'streakDays': _streakDays,
+      'lastLogDate': _lastLogDate?.toIso8601String(),
+    };
+    await _storage.writeNutritionByEmail(email, payload);
+  }
+}
