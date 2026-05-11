@@ -27,5 +27,8 @@ jobs:
       - name: Build Web
         run: flutter build web --release --base-href "/NutriPath/"
 
-      - name: Deploy
-        uses: bluefireteam/flutter-gh-pages@v9
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: build/web
