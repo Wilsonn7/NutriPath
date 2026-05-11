@@ -341,4 +341,4 @@ This project is private.
 
 ## 👨‍💻 Author
 
-NutriPath Development Team
+NutriPath Development Team 
