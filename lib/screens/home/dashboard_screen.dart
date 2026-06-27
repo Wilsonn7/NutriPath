@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -232,10 +234,20 @@ class DashboardScreen extends StatelessWidget {
             gradient: AppTheme.primaryGradient,
             boxShadow: AppTheme.glowingShadow,
           ),
-          child: const CircleAvatar(
+          child: CircleAvatar(
             radius: 24,
-            backgroundImage: NetworkImage('https://i.pravatar.cc/150?img=11'),
             backgroundColor: AppTheme.surfaceLight,
+            backgroundImage: user.photoUrl != null && user.photoUrl!.isNotEmpty
+                ? (user.photoUrl!.startsWith('http')
+                    ? NetworkImage(user.photoUrl!)
+                    : FileImage(File(user.photoUrl!)) as ImageProvider)
+                : null,
+            child: user.photoUrl == null || user.photoUrl!.isEmpty
+                ? Text(
+                    user.name.substring(0, 1).toUpperCase(),
+                    style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.bold),
+                  )
+                : null,
           ),
         )
       ],

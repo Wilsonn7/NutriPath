@@ -1,14 +1,14 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/user_model.dart';
-import '../core/storage/app_local_storage.dart';
+import '../core/services/supabase_service.dart';
 
 class AuthProvider extends ChangeNotifier {
   UserModel? _currentUser;
   bool _isLoading = false;
   String? _errorMessage;
-  final Map<String, String> _passwordByEmail = {};
-  final Map<String, UserModel> _usersByEmail = {};
-  final AppLocalStorage _storage = AppLocalStorage();
+  final SupabaseService _supabaseService = SupabaseService();
 
   UserModel? get currentUser => _currentUser;
   bool get isLoading => _isLoading;
@@ -19,59 +19,51 @@ class AuthProvider extends ChangeNotifier {
     _initialize();
   }
 
+  /// Initialize auth state - check if user is already logged in
   Future<void> _initialize() async {
     _isLoading = true;
     notifyListeners();
 
-    final users = await _storage.readUsers();
-    users.forEach((email, value) {
-      if (value is! Map<String, dynamic>) return;
-      final map = value;
-      final user = UserModel(
-        id: map['id'] as String,
-        email: map['email'] as String,
-        name: map['name'] as String,
-        weight: (map['weight'] as num).toDouble(),
-        targetWeight: (map['targetWeight'] as num).toDouble(),
-        height: (map['height'] as num).toDouble(),
-        age: (map['age'] as num).toInt(),
-        gender: map['gender'] as String,
-        activityLevel: map['activityLevel'] as String,
-      );
-      _usersByEmail[email] = user;
-      _passwordByEmail[email] = (map['password'] as String?) ?? '';
-    });
-
-    final sessionEmail = await _storage.readSessionEmail();
-    if (sessionEmail != null && _usersByEmail.containsKey(sessionEmail)) {
-      _currentUser = _usersByEmail[sessionEmail];
+    try {
+      final user = _supabaseService.getCurrentUser();
+      if (user != null) {
+        // Load user profile from Supabase
+        await _loadUserProfile(user.id);
+      }
+    } catch (e) {
+      _errorMessage = 'Error initializing auth: $e';
+      print('Auth initialization error: $e');
     }
 
     _isLoading = false;
     notifyListeners();
   }
 
-  Future<void> _persistUsers() async {
-    final map = <String, dynamic>{};
-    for (final entry in _usersByEmail.entries) {
-      final user = entry.value;
-      map[entry.key] = {
-        'id': user.id,
-        'email': user.email,
-        'name': user.name,
-        'weight': user.weight,
-        'targetWeight': user.targetWeight,
-        'height': user.height,
-        'age': user.age,
-        'gender': user.gender,
-        'activityLevel': user.activityLevel,
-        'password': _passwordByEmail[entry.key] ?? '',
-      };
+  /// Load user profile from Supabase database
+  Future<void> _loadUserProfile(String userId) async {
+    try {
+      final profile = await _supabaseService.getUserProfile(userId);
+      if (profile != null) {
+        _currentUser = UserModel(
+          id: profile['id'] ?? userId,
+          email: profile['email'] ?? '',
+          name: profile['name'] ?? '',
+          photoUrl: profile['photo_url'] as String?,
+          weight: (profile['weight'] as num?)?.toDouble() ?? 0,
+          targetWeight: (profile['target_weight'] as num?)?.toDouble() ?? 0,
+          height: (profile['height'] as num?)?.toDouble() ?? 0,
+          age: (profile['age'] as num?)?.toInt() ?? 0,
+          gender: profile['gender'] ?? '',
+          activityLevel: profile['activity_level'] ?? '',
+        );
+      }
+    } catch (e) {
+      print('Error loading user profile: $e');
+      _errorMessage = 'Error loading user profile: $e';
     }
-    await _storage.writeUsers(map);
   }
 
-  // Mock Register
+  /// Register new user with Supabase
   Future<bool> register({
     required String email,
     required String password,
@@ -87,81 +79,144 @@ class AuthProvider extends ChangeNotifier {
     _errorMessage = null;
     notifyListeners();
 
-    // Simulate network delay
-    await Future.delayed(const Duration(seconds: 1));
+    try {
+      final normalizedEmail = email.trim().toLowerCase();
 
-    final normalizedEmail = email.trim().toLowerCase();
-    if (_usersByEmail.containsKey(normalizedEmail)) {
-      _errorMessage = 'Email sudah terdaftar.';
-      _isLoading = false;
-      notifyListeners();
-      return false;
+      // Sign up with Supabase Auth
+      final response = await _supabaseService.signUp(
+        email: normalizedEmail,
+        password: password,
+      );
+
+      if (response.user != null) {
+        // Create user profile in database
+        await _supabaseService.createUserProfile(
+          userId: response.user!.id,
+          email: normalizedEmail,
+          name: name,
+          weight: weight,
+          targetWeight: targetWeight,
+          height: height,
+          age: age,
+          gender: gender,
+          activityLevel: activityLevel,
+        );
+
+        // Set current user
+        _currentUser = UserModel(
+          id: response.user!.id,
+          email: normalizedEmail,
+          name: name,
+          photoUrl: null,
+          weight: weight,
+          targetWeight: targetWeight,
+          height: height,
+          age: age,
+          gender: gender,
+          activityLevel: activityLevel,
+        );
+
+        _isLoading = false;
+        notifyListeners();
+        return true;
+      }
+    } on AuthException catch (e) {
+      _errorMessage = e.message;
+      print('Auth error: ${e.message}');
+    } catch (e) {
+      _errorMessage = 'Registration failed: $e';
+      print('Registration error: $e');
     }
-
-    final newUser = UserModel(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      email: normalizedEmail,
-      name: name,
-      weight: weight,
-      targetWeight: targetWeight,
-      height: height,
-      age: age,
-      gender: gender,
-      activityLevel: activityLevel,
-    );
-    _usersByEmail[normalizedEmail] = newUser;
-    _passwordByEmail[normalizedEmail] = password;
-    await _persistUsers();
 
     _isLoading = false;
     notifyListeners();
-    return true;
+    return false;
   }
 
-  // Mock Login
+  /// Login user with Supabase
   Future<bool> login(String email, String password) async {
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
 
-    // Simulate network delay
-    await Future.delayed(const Duration(seconds: 1));
+    try {
+      final normalizedEmail = email.trim().toLowerCase();
 
-    final normalizedEmail = email.trim().toLowerCase();
-    final savedPassword = _passwordByEmail[normalizedEmail];
-    final user = _usersByEmail[normalizedEmail];
-    if (savedPassword == null || user == null || savedPassword != password) {
-      _errorMessage = 'Email atau password salah.';
-      _isLoading = false;
-      notifyListeners();
-      return false;
+      // Sign in with Supabase Auth
+      final response = await _supabaseService.signIn(
+        email: normalizedEmail,
+        password: password,
+      );
+
+      if (response.user != null) {
+        // Load user profile
+        await _loadUserProfile(response.user!.id);
+
+        _isLoading = false;
+        notifyListeners();
+        return true;
+      }
+    } on AuthException catch (e) {
+      _errorMessage = e.message;
+      print('Login error: ${e.message}');
+    } catch (e) {
+      _errorMessage = 'Login failed: $e';
+      print('Login error: $e');
     }
-    _currentUser = user;
-    await _storage.writeSessionEmail(normalizedEmail);
 
     _isLoading = false;
     notifyListeners();
-    return true;
+    return false;
   }
 
-  // Update Profile
+  /// Update user profile
+  Future<String?> uploadProfilePhoto(File photoFile) async {
+    final user = _currentUser;
+    if (user == null) return null;
+    return await _supabaseService.uploadProfilePhoto(userId: user.id, file: photoFile);
+  }
+
   Future<void> updateProfile(UserModel updatedUser) async {
     _isLoading = true;
     notifyListeners();
 
-    await Future.delayed(const Duration(seconds: 1));
-    _currentUser = updatedUser;
-    _usersByEmail[updatedUser.email.toLowerCase()] = updatedUser;
-    await _persistUsers();
+    try {
+      await _supabaseService.updateUserProfile(
+        userId: updatedUser.id,
+        name: updatedUser.name,
+        photoUrl: updatedUser.photoUrl,
+        weight: updatedUser.weight,
+        targetWeight: updatedUser.targetWeight,
+        height: updatedUser.height,
+        age: updatedUser.age,
+        gender: updatedUser.gender,
+        activityLevel: updatedUser.activityLevel,
+      );
+
+      _currentUser = updatedUser;
+      _errorMessage = null;
+    } on AuthException catch (e) {
+      _errorMessage = 'Update failed: ${e.message}';
+    } catch (e) {
+      _errorMessage = 'Update failed: $e';
+      print('Update profile error: $e');
+    }
 
     _isLoading = false;
     notifyListeners();
   }
 
-  // Logout
-  void logout() {
-    _storage.writeSessionEmail(null);
-    _currentUser = null;
+  /// Logout user
+  Future<void> logout() async {
+    try {
+      await _supabaseService.signOut();
+      _currentUser = null;
+      _errorMessage = null;
+    } catch (e) {
+      _errorMessage = 'Logout failed: $e';
+      print('Logout error: $e');
+    }
     notifyListeners();
   }
 }
+

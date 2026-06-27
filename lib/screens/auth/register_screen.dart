@@ -4,6 +4,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import '../../core/theme.dart';
 import '../../state/auth_provider.dart';
+import '../../state/nutrition_provider.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -19,11 +20,49 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _weightCtrl = TextEditingController();
   final _targetWeightCtrl = TextEditingController();
   final _heightCtrl = TextEditingController();
+  final _birthDateCtrl = TextEditingController();
   final _ageCtrl = TextEditingController();
+  DateTime? _birthDate;
   String _gender = 'Male';
   String _activityLevel = 'moderate';
 
   final _formKey = GlobalKey<FormState>();
+
+  @override
+  void dispose() {
+    _emailCtrl.dispose();
+    _passwordCtrl.dispose();
+    _nameCtrl.dispose();
+    _weightCtrl.dispose();
+    _targetWeightCtrl.dispose();
+    _heightCtrl.dispose();
+    _birthDateCtrl.dispose();
+    _ageCtrl.dispose();
+    super.dispose();
+  }
+
+  int _calculateAge(DateTime birthDate) {
+    final today = DateTime.now();
+    final age = today.year - birthDate.year;
+    final hasHadBirthdayThisYear = (today.month > birthDate.month) ||
+        (today.month == birthDate.month && today.day >= birthDate.day);
+    return hasHadBirthdayThisYear ? age : age - 1;
+  }
+
+  Future<void> _selectBirthDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _birthDate ?? DateTime.now().subtract(const Duration(days: 365 * 25)),
+      firstDate: DateTime(1900),
+      lastDate: DateTime.now(),
+    );
+    if (picked == null) return;
+    setState(() {
+      _birthDate = picked;
+      _birthDateCtrl.text = '${picked.day}/${picked.month}/${picked.year}';
+      _ageCtrl.text = _calculateAge(picked).toString();
+    });
+  }
 
   void _register() async {
     if (_formKey.currentState!.validate()) {
@@ -39,6 +78,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
             activityLevel: _activityLevel,
           );
       if (success && mounted) {
+        // Sync nutrition data for newly registered user
+        final currentUser = context.read<AuthProvider>().currentUser;
+        if (currentUser != null) {
+          await context.read<NutritionProvider>().syncForUser(currentUser.id);
+        }
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Akun berhasil dibuat. Silakan login.')),
         );
@@ -192,14 +236,27 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       ).animate().slideX(delay: 450.ms, begin: 0.2),
                       const SizedBox(height: 16),
 
-                      // ✅ Age — baris sendiri
-                      _buildTextField(
-                        controller: _ageCtrl,
-                        label: 'Age',
-                        icon: LucideIcons.calendar,
-                        keyboardType: TextInputType.number,
-                        validator: (v) => v!.isEmpty ? 'Required' : null,
+                      // Date of Birth selection with auto age calculation
+                      TextFormField(
+                        controller: _birthDateCtrl,
+                        readOnly: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Date of Birth',
+                          prefixIcon: Icon(LucideIcons.calendar),
+                          suffixIcon: Icon(Icons.calendar_month),
+                        ),
+                        onTap: _selectBirthDate,
+                        validator: (v) => v == null || v.isEmpty ? 'Required' : null,
                       ).animate().slideX(delay: 500.ms, begin: 0.2),
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: _ageCtrl,
+                        readOnly: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Age',
+                          prefixIcon: Icon(LucideIcons.user),
+                        ),
+                      ).animate().slideX(delay: 520.ms, begin: 0.2),
                       const SizedBox(height: 16),
 
                       // ✅ Gender — baris sendiri (tidak digabung Age)

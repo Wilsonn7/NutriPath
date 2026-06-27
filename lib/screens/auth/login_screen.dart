@@ -4,6 +4,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 import '../../core/theme.dart';
 import '../../state/auth_provider.dart';
+import '../../state/nutrition_provider.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -25,6 +26,11 @@ class _LoginScreenState extends State<LoginScreen> {
             _passwordCtrl.text,
           );
       if (success && mounted) {
+        // Sync nutrition data for logged in user
+        final currentUser = context.read<AuthProvider>().currentUser;
+        if (currentUser != null) {
+          await context.read<NutritionProvider>().syncForUser(currentUser.id);
+        }
         // Handled by main.dart listener
       } else if (mounted) {
         final error = context.read<AuthProvider>().errorMessage ?? 'Login gagal.';

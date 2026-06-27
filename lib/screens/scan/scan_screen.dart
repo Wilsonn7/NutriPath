@@ -147,6 +147,20 @@ class _ScanScreenState extends State<ScanScreen> {
                     ),
                   ],
                 ).animate().slideY(begin: 0.2),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    const Icon(LucideIcons.info, size: 16, color: Colors.white70),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Catatan: Hasil pemindaian bersifat perkiraan dan mungkin tidak selalu akurat. Objek yang tertumpuk atau tersembunyi mungkin tidak terdeteksi.',
+                        textAlign: TextAlign.justify,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white70, height: 1.4),
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 32),
                 if (isLoading)
                   Column(
