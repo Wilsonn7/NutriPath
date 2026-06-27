@@ -335,10 +335,8 @@ Dengan pendekatan ini, aplikasi dapat berjalan secara **offline-first**, ringan,
 ---
 
 ## 📝 License
-
 This project is developed for educational purposes.
 This project is private.
 
 ## 👨‍💻 Author
-
-NutriPath Development Team 
+NutriPath Development Team
