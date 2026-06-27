@@ -1,6 +1,6 @@
 # NutriPath - Nutrition Tracking App
 
-Aplikasi Flutter untuk tracking nutrisi harian dengan fitur AI-powered food recognition. NutriPath membantu user memantau asupan kalori, protein, lemak, karbohidrat, dan gula dengan mudah menggunakan kamera atau input manual.
+Aplikasi flutter untuk tracking nutrisi harian dengan fitur AI-powered food recognition. NutriPath membantu user memantau asupan kalori, protein, lemak, karbohidrat, dan gula dengan mudah menggunakan kamera atau input manual.
 
 ## 📱 Features
 
