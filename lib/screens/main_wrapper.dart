@@ -4,8 +4,7 @@ import 'dart:ui';
 import 'home/dashboard_screen.dart';
 import 'scan/scan_screen.dart';
 import 'history/history_screen.dart';
-import 'search/search_screen.dart';
-import 'insight/insight_screen.dart';
+import 'search_insight/search_insight_screen.dart';
 import 'profile/profile_screen.dart';
 import '../core/theme.dart';
 import '../state/auth_provider.dart';
@@ -21,26 +20,25 @@ class MainWrapper extends StatefulWidget {
 
 class _MainWrapperState extends State<MainWrapper> {
   int _currentIndex = 0;
-  String? _syncedEmail;
+  String? _syncedUserId;
 
   final List<Widget> _screens = [
     const DashboardScreen(),
     const ScanScreen(),
     const HistoryScreen(),
-    const SearchScreen(),
-    const InsightScreen(),
+    const SearchInsightScreen(),
     const ProfileScreen(),
   ];
 
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
-    final currentEmail = auth.currentUser?.email;
-    if (_syncedEmail != currentEmail) {
-      _syncedEmail = currentEmail;
+    final currentUserId = auth.currentUser?.id;
+    if (_syncedUserId != currentUserId) {
+      _syncedUserId = currentUserId;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          context.read<NutritionProvider>().syncForUser(currentEmail);
+          context.read<NutritionProvider>().syncForUser(currentUserId);
         }
       });
     }
@@ -76,8 +74,7 @@ class _MainWrapperState extends State<MainWrapper> {
                     _buildNavItem(1, LucideIcons.scanLine, 'Scan'),
                     _buildNavItem(2, LucideIcons.history, 'History'),
                     _buildNavItem(3, LucideIcons.search, 'Search'),
-                    _buildNavItem(4, LucideIcons.sparkles, 'Insight'),
-                    _buildNavItem(5, LucideIcons.user, 'Profile'),
+                    _buildNavItem(4, LucideIcons.user, 'Profile'),
                   ],
                 ),
               ),

@@ -2,6 +2,7 @@ class UserModel {
   final String id;
   final String email;
   final String name;
+  final String? photoUrl;
   final double weight; // kg
   final double targetWeight; // kg
   final double height; // cm
@@ -13,6 +14,7 @@ class UserModel {
     required this.id,
     required this.email,
     required this.name,
+    this.photoUrl,
     required this.weight,
     required this.targetWeight,
     required this.height,
@@ -60,6 +62,7 @@ class UserModel {
     String? id,
     String? email,
     String? name,
+    String? photoUrl,
     double? weight,
     double? targetWeight,
     double? height,
@@ -71,6 +74,7 @@ class UserModel {
       id: id ?? this.id,
       email: email ?? this.email,
       name: name ?? this.name,
+      photoUrl: photoUrl ?? this.photoUrl,
       weight: weight ?? this.weight,
       targetWeight: targetWeight ?? this.targetWeight,
       height: height ?? this.height,

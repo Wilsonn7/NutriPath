@@ -5,7 +5,7 @@ import '../models/user_model.dart';
 import '../core/config/app_config.dart';
 import '../core/services/openai_food_service.dart';
 import '../core/services/food_search_service.dart';
-import '../core/storage/app_local_storage.dart';
+import '../core/services/supabase_service.dart';
 
 class NutritionProvider extends ChangeNotifier {
   final List<FoodModel> _dailyLog = [];
@@ -14,12 +14,12 @@ class NutritionProvider extends ChangeNotifier {
   DateTime? _lastLogDate;
   int _streakDays = 0;
   int _points = 0;
-  String? _activeEmail;
+  String? _activeUserId;
   String? _openAiKey;
 
   late OpenAIFoodService _openAIFoodService;
   late final Future<void> _openAIKeyLoad;
-  final AppLocalStorage _storage = AppLocalStorage();
+  final SupabaseService _supabaseService = SupabaseService();
   late FoodSearchService _foodSearchService;
 
   NutritionProvider() {
@@ -39,7 +39,7 @@ class NutritionProvider extends ChangeNotifier {
   bool get isLoading => _isLoading;
   int get streakDays => _streakDays;
   int get points => _points;
-  String? get activeEmail => _activeEmail;
+  String? get activeEmail => _activeUserId;
   bool get isOpenAIConfigured => _openAIFoodService.isConfigured;
 
   double get totalCaloriesConsumed =>
@@ -53,17 +53,17 @@ class NutritionProvider extends ChangeNotifier {
   double get totalSugarConsumed =>
       _dailyLog.fold(0, (sum, item) => sum + item.sugar);
 
-  Future<void> syncForUser(String? email) async {
-    if (email == _activeEmail) return;
+  Future<void> syncForUser(String? userId) async {
+    if (userId == _activeUserId) return;
 
-    _activeEmail = email;
+    _activeUserId = userId;
     _dailyLog.clear();
     _history.clear();
     _streakDays = 0;
     _points = 0;
     _lastLogDate = null;
 
-    if (email == null) {
+    if (userId == null) {
       notifyListeners();
       return;
     }
@@ -71,22 +71,39 @@ class NutritionProvider extends ChangeNotifier {
     _isLoading = true;
     notifyListeners();
 
-    final data = await _storage.readNutritionByEmail(email);
-    final historyRaw = (data['history'] as List?) ?? const [];
-    for (final item in historyRaw) {
-      if (item is Map<String, dynamic>) {
-        _history.add(FoodModel.fromMap(item));
-      } else if (item is Map) {
-        _history.add(FoodModel.fromMap(Map<String, dynamic>.from(item)));
+    try {
+      // Load all nutrition logs for user
+      final logs = await _supabaseService.getNutritionLogs(userId);
+      for (final logData in logs) {
+        final food = FoodModel(
+          id: logData['id'] ?? '',
+          name: logData['food_name'] ?? 'Unknown',
+          calories: (logData['calories'] as num?)?.toDouble() ?? 0,
+          protein: (logData['protein'] as num?)?.toDouble() ?? 0,
+          fat: (logData['fat'] as num?)?.toDouble() ?? 0,
+          carbs: (logData['carbs'] as num?)?.toDouble() ?? 0,
+          sugar: (logData['sugar'] as num?)?.toDouble() ?? 0,
+          consumedAt: DateTime.tryParse(logData['created_at'] ?? '') ?? DateTime.now(),
+          imageUrl: logData['food_image'],
+          isScanned: (logData['is_scanned'] as bool?) ?? false,
+        );
+        _history.add(food);
       }
-    }
-    _rebuildDailyLog();
 
-    _points = (data['points'] as num?)?.toInt() ?? 0;
-    _streakDays = (data['streakDays'] as num?)?.toInt() ?? 0;
-    final lastDate = data['lastLogDate'];
-    if (lastDate is String && lastDate.isNotEmpty) {
-      _lastLogDate = DateTime.tryParse(lastDate);
+      // Load user stats
+      final stats = await _supabaseService.getUserStats(userId);
+      if (stats != null) {
+        _streakDays = (stats['streak_days'] as num?)?.toInt() ?? 0;
+        _points = (stats['points'] as num?)?.toInt() ?? 0;
+        final lastDate = stats['last_log_date'] as String?;
+        if (lastDate != null && lastDate.isNotEmpty) {
+          _lastLogDate = DateTime.tryParse(lastDate);
+        }
+      }
+
+      _rebuildDailyLog();
+    } catch (e) {
+      print('Error syncing nutrition data: $e');
     }
 
     _isLoading = false;
@@ -135,7 +152,7 @@ class NutritionProvider extends ChangeNotifier {
       _history.add(food);
     }
     _updateGamification(food.consumedAt);
-    _persistNutritionData();
+    _persistNutritionData(food);
     notifyListeners();
   }
 
@@ -311,9 +328,7 @@ class NutritionProvider extends ChangeNotifier {
   Future<void> _setOpenAIKey(String? key, {bool saveToPrefs = false}) async {
     _openAiKey = key;
     _createNewServiceWithKey(_openAiKey);
-    if (saveToPrefs) {
-      await _storage.writeOpenAIKey(_openAiKey);
-    }
+    // Note: No longer saving to preferences, only config file
   }
 
   Future<bool> _reloadOpenAIKeyFromConfig() async {
@@ -327,28 +342,14 @@ class NutritionProvider extends ChangeNotifier {
   }
 
   Future<void> _loadStoredOpenAIKey() async {
-    print('DEBUG: Loading OpenAI key from shared storage...');
+    print('DEBUG: Loading OpenAI key from config...');
 
-    // First, try to load from SharedPreferences
-    final storedKey = await _storage.readOpenAIKey();
-    if (storedKey != null && storedKey.isNotEmpty) {
-      _openAiKey = storedKey;
-      _createNewServiceWithKey(_openAiKey);
-      print('DEBUG: OpenAI key loaded from shared storage.');
-      return;
-    }
-
-    // If not found in SharedPreferences, try to load from config.json
-    print(
-      'DEBUG: OpenAI key not found in shared storage, loading from config.json...',
-    );
+    // Load from config.json
     final configKey = await AppConfig.getGoogleApiKey();
     if (configKey != null && configKey.isNotEmpty) {
       _openAiKey = configKey;
-      // Save it to SharedPreferences for future use
-      await _storage.writeOpenAIKey(_openAiKey);
       _createNewServiceWithKey(_openAiKey);
-      print('DEBUG: OpenAI key loaded from config.json and saved.');
+      print('DEBUG: OpenAI key loaded from config.json.');
       return;
     }
 
@@ -444,16 +445,33 @@ class NutritionProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _persistNutritionData() async {
-    final email = _activeEmail;
-    if (email == null) return;
+  Future<void> _persistNutritionData(FoodModel food) async {
+    final userId = _activeUserId;
+    if (userId == null) return;
 
-    final payload = <String, dynamic>{
-      'history': _history.map((e) => e.toMap()).toList(),
-      'points': _points,
-      'streakDays': _streakDays,
-      'lastLogDate': _lastLogDate?.toIso8601String(),
-    };
-    await _storage.writeNutritionByEmail(email, payload);
+    try {
+      // Add nutrition log to Supabase
+      await _supabaseService.addNutritionLog(
+        userId: userId,
+        foodName: food.name,
+        calories: food.calories,
+        protein: food.protein,
+        fat: food.fat,
+        carbs: food.carbs,
+        sugar: food.sugar,
+        servingSize: 1.0,
+        foodImage: food.imageUrl,
+      );
+
+      // Update user stats
+      await _supabaseService.updateUserStats(
+        userId: userId,
+        streakDays: _streakDays,
+        points: _points,
+        lastLogDate: _lastLogDate?.toIso8601String() ?? '',
+      );
+    } catch (e) {
+      print('Error persisting nutrition data: $e');
+    }
   }
 }

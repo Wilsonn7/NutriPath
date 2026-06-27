@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import '../../core/theme.dart';
@@ -12,10 +15,15 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
+  final ImagePicker _picker = ImagePicker();
+  String? _selectedPhotoPath;
+  String? _loadedUserId;
   late TextEditingController _weightCtrl;
   late TextEditingController _targetWeightCtrl;
   late TextEditingController _heightCtrl;
+  late TextEditingController _birthDateCtrl;
   late TextEditingController _ageCtrl;
+  DateTime? _birthDate;
   late String _activityLevel;
   late String _gender;
 
@@ -26,6 +34,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _weightCtrl.dispose();
     _targetWeightCtrl.dispose();
     _heightCtrl.dispose();
+    _birthDateCtrl.dispose();
     _ageCtrl.dispose();
     super.dispose();
   }
@@ -33,14 +42,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   void initState() {
     super.initState();
-    final user = context.read<AuthProvider>().currentUser!;
 
-    _weightCtrl = TextEditingController(text: user.weight.toString());
-    _targetWeightCtrl = TextEditingController(
-      text: user.targetWeight.toString(),
-    );
-    _heightCtrl = TextEditingController(text: user.height.toString());
-    _ageCtrl = TextEditingController(text: user.age.toString());
+    _selectedPhotoPath = null;
+    _weightCtrl = TextEditingController();
+    _targetWeightCtrl = TextEditingController();
+    _heightCtrl = TextEditingController();
+    _birthDateCtrl = TextEditingController();
+    _ageCtrl = TextEditingController();
+    _activityLevel = 'moderate';
+    _gender = 'Male';
+  }
+
+  void _syncUserControllers(AuthProvider auth) {
+    final user = auth.currentUser;
+    if (user == null || _loadedUserId == user.id) return;
+
+    _loadedUserId = user.id;
+    _selectedPhotoPath = user.photoUrl;
+    _weightCtrl.text = user.weight.toString();
+    _targetWeightCtrl.text = user.targetWeight.toString();
+    _heightCtrl.text = user.height.toString();
+    _ageCtrl.text = user.age.toString();
+    _birthDateCtrl.text = '';
     _activityLevel = user.activityLevel;
     _gender = user.gender;
   }
@@ -48,6 +71,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
   void _saveProfile() async {
     final auth = context.read<AuthProvider>();
     final user = auth.currentUser!;
+    String? photoUrl = _selectedPhotoPath;
+
+    if (_selectedPhotoPath != null && !_selectedPhotoPath!.startsWith('http')) {
+      try {
+        final file = File(_selectedPhotoPath!);
+        if (await file.exists()) {
+          photoUrl = await auth.uploadProfilePhoto(file);
+        }
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Gagal upload foto profil: ${e.toString()}')),
+        );
+        return;
+      }
+    }
 
     final updatedUser = user.copyWith(
       weight: double.tryParse(_weightCtrl.text) ?? user.weight,
@@ -57,6 +96,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       age: int.tryParse(_ageCtrl.text) ?? user.age,
       gender: _gender,
       activityLevel: _activityLevel,
+      photoUrl: photoUrl,
     );
 
     await auth.updateProfile(updatedUser);
@@ -65,14 +105,88 @@ class _ProfileScreenState extends State<ProfileScreen> {
     setState(() {
       _isEditing = false;
     });
+  }
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Profile updated successfully! Goals recalculated.'),
-        ),
-      );
-    }
+  int _calculateAge(DateTime birthDate) {
+    final today = DateTime.now();
+    final age = today.year - birthDate.year;
+    final hasHadBirthdayThisYear = (today.month > birthDate.month) ||
+        (today.month == birthDate.month && today.day >= birthDate.day);
+    return hasHadBirthdayThisYear ? age : age - 1;
+  }
+
+  Future<void> _selectBirthDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _birthDate ?? DateTime.now().subtract(const Duration(days: 365 * 25)),
+      firstDate: DateTime(1900),
+      lastDate: DateTime.now(),
+    );
+    if (picked == null) return;
+    setState(() {
+      _birthDate = picked;
+      _birthDateCtrl.text = '${picked.day}/${picked.month}/${picked.year}';
+      _ageCtrl.text = _calculateAge(picked).toString();
+    });
+  }
+
+
+  Future<void> _pickProfileImage(ImageSource source) async {
+    final pickedFile = await _picker.pickImage(
+      source: source,
+      maxWidth: 800,
+      imageQuality: 80,
+    );
+    if (pickedFile == null) return;
+
+    setState(() {
+      _selectedPhotoPath = pickedFile.path;
+    });
+  }
+
+  void _showPhotoOptions() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(24),
+      ),
+      builder: (context) {
+        return Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Choose Profile Photo', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _pickProfileImage(ImageSource.camera);
+                },
+                icon: const Icon(Icons.camera_alt),
+                label: const Text('Take a Photo'),
+              ),
+              const SizedBox(height: 12),
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _pickProfileImage(ImageSource.gallery);
+                },
+                icon: const Icon(Icons.photo_library),
+                label: const Text('Choose from Gallery'),
+              ),
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   void _logout() {
@@ -105,7 +219,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final user = context.watch<AuthProvider>().currentUser;
+    final auth = context.watch<AuthProvider>();
+    _syncUserControllers(auth);
+    final user = auth.currentUser;
     if (user == null) return const SizedBox.shrink();
 
     final safeAreaBottom = MediaQuery.of(context).viewPadding.bottom;
@@ -131,16 +247,41 @@ class _ProfileScreenState extends State<ProfileScreen> {
           padding: EdgeInsets.fromLTRB(24, 24, 24, bottomPadding),
           child: Column(
             children: [
-              CircleAvatar(
-                radius: 50,
-                backgroundColor: AppTheme.primary.withOpacity(0.2),
-                child: Text(
-                  user.name.substring(0, 1).toUpperCase(),
-                  style: const TextStyle(
-                    fontSize: 40,
-                    color: AppTheme.primary,
-                    fontWeight: FontWeight.bold,
-                  ),
+              GestureDetector(
+                onTap: _isEditing ? _showPhotoOptions : null,
+                child: Stack(
+                  alignment: Alignment.bottomRight,
+                  children: [
+                    CircleAvatar(
+                      radius: 50,
+                      backgroundColor: AppTheme.primary.withOpacity(0.2),
+                      backgroundImage: _selectedPhotoPath != null && _selectedPhotoPath!.isNotEmpty
+                          ? (_selectedPhotoPath!.startsWith('http')
+                              ? NetworkImage(_selectedPhotoPath!)
+                              : FileImage(File(_selectedPhotoPath!)) as ImageProvider)
+                          : null,
+                      child: _selectedPhotoPath == null || _selectedPhotoPath!.isEmpty
+                          ? Text(
+                              user.name.substring(0, 1).toUpperCase(),
+                              style: const TextStyle(
+                                fontSize: 40,
+                                color: AppTheme.primary,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            )
+                          : null,
+                    ),
+                    if (_isEditing)
+                      Container(
+                        decoration: BoxDecoration(
+                          color: AppTheme.surface,
+                          shape: BoxShape.circle,
+                          boxShadow: AppTheme.glowingShadow,
+                        ),
+                        padding: const EdgeInsets.all(6),
+                        child: const Icon(Icons.camera_alt, size: 18, color: AppTheme.primary),
+                      ),
+                  ],
                 ),
               ).animate().scale(),
               const SizedBox(height: 16),
@@ -175,7 +316,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     const SizedBox(height: 16),
                     _buildTextField('Height (cm)', _heightCtrl, Icons.height),
                     const SizedBox(height: 16),
-                    _buildTextField('Age', _ageCtrl, Icons.cake),
+                    TextFormField(
+                      controller: _birthDateCtrl,
+                      readOnly: true,
+                      onTap: _isEditing ? _selectBirthDate : null,
+                      decoration: const InputDecoration(
+                        labelText: 'Date of Birth',
+                        prefixIcon: Icon(Icons.cake, color: AppTheme.textSecondary),
+                        suffixIcon: Icon(Icons.calendar_month),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _ageCtrl,
+                      readOnly: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Age',
+                        prefixIcon: Icon(Icons.timelapse, color: AppTheme.textSecondary),
+                      ),
+                    ),
                     const SizedBox(height: 16),
                     DropdownButtonFormField<String>(
                       value: _gender,

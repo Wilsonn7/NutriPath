@@ -1,5 +1,5 @@
-import 'package:test/test.dart';
-import '../lib/core/services/openai_food_service.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:nutri_path/core/services/openai_food_service.dart';
 
 void main() {
   test('OpenAIFoodService initialization', () {
